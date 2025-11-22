@@ -4,6 +4,13 @@ import NodeCache from "node-cache";
 const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "86400", 10); // 24h
 const cache = new NodeCache({ stdTTL: CACHE_TTL });
 
+// A small set of rotating User-Agents
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.117 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+];
+
 function unescapeUnicode(str) {
   try { 
     return str.replace(/\\u([\dA-Fa-f]{4})/g, (m, g) => String.fromCharCode(parseInt(g, 16))); 
@@ -31,22 +38,28 @@ function parseTikTokHtml(html) {
   return { video, audio, thumbnail, title };
 }
 
-async function validateUrl(url) {
+async function validateUrl(url, userAgent) {
   try {
-    const res = await axios.head(url, { timeout: 10000 });
+    const res = await axios.head(url, { timeout: 15000, headers: { "User-Agent": userAgent } });
     return res.status === 200;
   } catch {
     return false;
   }
 }
 
-async function callScraperAPI(url, render = false, maxCost = 10) {
+async function callScraperAPI(url, render = false, userAgent) {
   const apiKey = process.env.SCRAPERAPI_KEY;
   if (!apiKey) throw new Error("Missing SCRAPERAPI_KEY env var");
 
-  const params = { api_key: apiKey, url, render, max_cost: maxCost };
-  const res = await axios.get("https://api.scraperapi.com", { params, timeout: 40000 });
-  const creditUsed = res.headers["sa-credit-cost"] || maxCost;
+  const params = { 
+    api_key: apiKey, 
+    url, 
+    render, 
+    max_cost: 20, 
+    custom_headers: { "User-Agent": userAgent }
+  };
+  const res = await axios.get("https://api.scraperapi.com", { params, timeout: 60000 });
+  const creditUsed = res.headers["sa-credit-cost"] || 20;
   return { html: res.data, creditUsed };
 }
 
@@ -61,48 +74,47 @@ export default async function handler(req, res) {
 
   let lastError = null;
 
-  // 1️⃣ Try non-rendered request first
-  try {
-    const { html, creditUsed } = await callScraperAPI(url, false);
-    const parsed = parseTikTokHtml(html);
-    if (parsed) {
-      // validate URLs
-      if (parsed.video && !(await validateUrl(parsed.video))) parsed.video = null;
-      if (parsed.audio && !(await validateUrl(parsed.audio))) parsed.audio = null;
+  // Try with multiple user-agents and retries
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const userAgent = USER_AGENTS[attempt % USER_AGENTS.length];
 
-      cache.set(cacheKey, { ...parsed, creditUsed });
-      return res.status(200).json({ ...parsed, creditUsed });
-    }
-  } catch (err) {
-    lastError = err;
-    console.warn("[scrape] basic request failed:", err.message || err.toString());
-  }
-
-  // 2️⃣ Try rendered request with 2 retries
-  for (let attempt = 1; attempt <= 2; attempt++) {
+    // 1️⃣ Try non-rendered first
     try {
-      const { html, creditUsed } = await callScraperAPI(url, true);
+      const { html, creditUsed } = await callScraperAPI(url, false, userAgent);
       const parsed = parseTikTokHtml(html);
       if (parsed) {
-        // validate URLs
-        if (parsed.video && !(await validateUrl(parsed.video))) parsed.video = null;
-        if (parsed.audio && !(await validateUrl(parsed.audio))) parsed.audio = null;
+        if (parsed.video && !(await validateUrl(parsed.video, userAgent))) parsed.video = null;
+        if (parsed.audio && !(await validateUrl(parsed.audio, userAgent))) parsed.audio = null;
 
-        if (!parsed.video && !parsed.audio) throw new Error("No valid media URLs after validation");
-
-        cache.set(cacheKey, { ...parsed, creditUsed });
-        console.log(`[scrape] render success on attempt ${attempt}, credits: ${creditUsed}`);
-        return res.status(200).json({ ...parsed, creditUsed });
+        if (parsed.video || parsed.audio) {
+          cache.set(cacheKey, { ...parsed, creditUsed });
+          return res.status(200).json({ ...parsed, creditUsed });
+        }
       }
     } catch (err) {
       lastError = err;
-      console.warn(`[scrape] render attempt ${attempt} failed:`, err.message || err.toString());
+    }
+
+    // 2️⃣ Try rendered request if non-rendered failed
+    try {
+      const { html, creditUsed } = await callScraperAPI(url, true, userAgent);
+      const parsed = parseTikTokHtml(html);
+      if (parsed) {
+        if (parsed.video && !(await validateUrl(parsed.video, userAgent))) parsed.video = null;
+        if (parsed.audio && !(await validateUrl(parsed.audio, userAgent))) parsed.audio = null;
+
+        if (parsed.video || parsed.audio) {
+          cache.set(cacheKey, { ...parsed, creditUsed });
+          return res.status(200).json({ ...parsed, creditUsed });
+        }
+      }
+    } catch (err) {
+      lastError = err;
     }
   }
 
-  // 3️⃣ All attempts failed
   return res.status(502).json({
-    error: "Failed to fetch TikTok media. Please try a different video or wait a few minutes.",
+    error: "Failed to fetch TikTok media. Video may be restricted or TikTok blocked the request. Audio may still work.",
     details: lastError?.message || "Unknown error"
   });
 }
