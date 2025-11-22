@@ -5,8 +5,9 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "86400", 10); // 24h
 const cache = new NodeCache({ stdTTL: CACHE_TTL });
 
 function unescapeUnicode(str) {
-  try { return str.replace(/\\u([\dA-Fa-f]{4})/g, (m, g) => String.fromCharCode(parseInt(g, 16))); }
-  catch { return str; }
+  try { 
+    return str.replace(/\\u([\dA-Fa-f]{4})/g, (m, g) => String.fromCharCode(parseInt(g, 16))); 
+  } catch { return str; }
 }
 
 function parseTikTokHtml(html) {
@@ -26,8 +27,27 @@ function parseTikTokHtml(html) {
   const thumbnail = thumbMatch ? thumbMatch[1] : null;
   const title = titleMatch ? titleMatch[1] : null;
 
-  if (!video) return null;
+  if (!video && !audio) return null;
   return { video, audio, thumbnail, title };
+}
+
+async function validateUrl(url) {
+  try {
+    const res = await axios.head(url, { timeout: 10000 });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+async function callScraperAPI(url, render = false, maxCost = 10) {
+  const apiKey = process.env.SCRAPERAPI_KEY;
+  if (!apiKey) throw new Error("Missing SCRAPERAPI_KEY env var");
+
+  const params = { api_key: apiKey, url, render, max_cost: maxCost };
+  const res = await axios.get("https://api.scraperapi.com", { params, timeout: 40000 });
+  const creditUsed = res.headers["sa-credit-cost"] || maxCost;
+  return { html: res.data, creditUsed };
 }
 
 export default async function handler(req, res) {
@@ -39,42 +59,50 @@ export default async function handler(req, res) {
   const cached = cache.get(cacheKey);
   if (cached) return res.status(200).json({ ...cached, cached: true });
 
-  const apiKey = process.env.SCRAPERAPI_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Missing SCRAPERAPI_KEY env var" });
+  let lastError = null;
 
-  async function callScraper(params = {}) {
-    const r = await axios.get("https://api.scraperapi.com", { params: { api_key: apiKey, ...params }, timeout: 20000 });
-    return r;
-  }
-
+  // 1️⃣ Try non-rendered request first
   try {
-    const r1 = await callScraper({ url, render: false });
-    const credit1 = r1.headers["sa-credit-cost"] || r1.headers["sa-credit-cost".toLowerCase()] || "1";
-    const parsed1 = parseTikTokHtml(r1.data);
-    if (parsed1 && parsed1.video) {
-      cache.set(cacheKey, { ...parsed1, creditUsed: credit1 });
-      console.log(`[scrape] basic success, credits: ${credit1}`);
-      return res.status(200).json({ ...parsed1, creditUsed: credit1 });
-    }
-    console.warn("[scrape] basic parse failed, falling back to render");
-  } catch (err) {
-    console.warn("[scrape] basic request error:", err.message || err.toString());
-  }
+    const { html, creditUsed } = await callScraperAPI(url, false);
+    const parsed = parseTikTokHtml(html);
+    if (parsed) {
+      // validate URLs
+      if (parsed.video && !(await validateUrl(parsed.video))) parsed.video = null;
+      if (parsed.audio && !(await validateUrl(parsed.audio))) parsed.audio = null;
 
-  try {
-    const maxCost = 10;
-    const r2 = await callScraper({ url, render: true, max_cost: maxCost });
-    const credit2 = r2.headers["sa-credit-cost"] || String(maxCost);
-    const parsed2 = parseTikTokHtml(r2.data);
-    if (parsed2 && parsed2.video) {
-      cache.set(cacheKey, { ...parsed2, creditUsed: credit2 });
-      console.log(`[scrape] render success, credits: ${credit2}`);
-      return res.status(200).json({ ...parsed2, creditUsed: credit2 });
-    } else {
-      return res.status(502).json({ error: "Could not extract video from TikTok page" });
+      cache.set(cacheKey, { ...parsed, creditUsed });
+      return res.status(200).json({ ...parsed, creditUsed });
     }
   } catch (err) {
-    console.error("[scrape] render request failed:", err.message || err.toString());
-    return res.status(500).json({ error: "ScraperAPI render failed" });
+    lastError = err;
+    console.warn("[scrape] basic request failed:", err.message || err.toString());
   }
+
+  // 2️⃣ Try rendered request with 2 retries
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const { html, creditUsed } = await callScraperAPI(url, true);
+      const parsed = parseTikTokHtml(html);
+      if (parsed) {
+        // validate URLs
+        if (parsed.video && !(await validateUrl(parsed.video))) parsed.video = null;
+        if (parsed.audio && !(await validateUrl(parsed.audio))) parsed.audio = null;
+
+        if (!parsed.video && !parsed.audio) throw new Error("No valid media URLs after validation");
+
+        cache.set(cacheKey, { ...parsed, creditUsed });
+        console.log(`[scrape] render success on attempt ${attempt}, credits: ${creditUsed}`);
+        return res.status(200).json({ ...parsed, creditUsed });
+      }
+    } catch (err) {
+      lastError = err;
+      console.warn(`[scrape] render attempt ${attempt} failed:`, err.message || err.toString());
+    }
+  }
+
+  // 3️⃣ All attempts failed
+  return res.status(502).json({
+    error: "Failed to fetch TikTok media. Please try a different video or wait a few minutes.",
+    details: lastError?.message || "Unknown error"
+  });
 }
