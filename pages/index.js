@@ -4,10 +4,12 @@ export default function Home() {
   const [url, setUrl] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
 
   async function fetchTikTok() {
     setLoading(true);
+    setRetrying(false);
     setError("");
     setResult(null);
 
@@ -18,14 +20,39 @@ export default function Home() {
         body: JSON.stringify({ url }),
       });
       const data = await res.json();
-
       if (!res.ok) throw new Error(data.error || "Unknown error");
-
       setResult(data);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function retryVideo() {
+    if (!url) return;
+    setRetrying(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/tiktok", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Unknown error");
+
+      // Only update video, keep audio
+      setResult(prev => ({
+        ...prev,
+        video: data.video,
+        cached: data.cached || false,
+      }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -74,7 +101,18 @@ export default function Home() {
               </button>
             </a>
           ) : (
-            <p style={{ color: "orange" }}>⚠️ Video unavailable. Try again later.</p>
+            <div style={{ marginBottom: "10px" }}>
+              <p style={{ color: "orange", display: "inline", marginRight: "10px" }}>
+                ⚠️ Video unavailable.
+              </p>
+              <button
+                onClick={retryVideo}
+                disabled={retrying}
+                style={{ padding: "5px 15px", cursor: "pointer" }}
+              >
+                {retrying ? "Retrying..." : "Retry Video"}
+              </button>
+            </div>
           )}
 
           {/* Audio */}
