@@ -1,75 +1,104 @@
 import { useState } from "react";
-import axios from "axios";
 
 export default function Home() {
   const [url, setUrl] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!url) return alert("Paste a TikTok URL");
+  async function fetchTikTok() {
     setLoading(true);
+    setError("");
     setResult(null);
 
     try {
-      const res = await axios.post("/api/tiktok", { url });
-      setResult(res.data);
+      const res = await fetch("/api/tiktok", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data.error || "Unknown error");
+
+      setResult(data);
     } catch (err) {
-      console.error(err);
-      alert(err?.response?.data?.error || "Request failed");
+      setError(err.message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
-    <div style={{ fontFamily: "Inter, system-ui, sans-serif", padding: 20 }}>
-      <div style={{ maxWidth: 720, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 28, marginBottom: 12 }}>TikTok Downloader</h1>
-        <p style={{ marginBottom: 18 }}>Paste a TikTok URL and get direct download links.</p>
+    <div style={{ maxWidth: 600, margin: "40px auto", fontFamily: "sans-serif" }}>
+      <h1>TikTok Downloader</h1>
 
-        <form onSubmit={submit} style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://www.tiktok.com/@.../video/..."
-            style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #ddd" }}
-          />
-          <button type="submit" disabled={loading} style={{ padding: "10px 16px", borderRadius: 6 }}>
-            {loading ? "Loading..." : "Fetch"}
-          </button>
-        </form>
+      <input
+        type="text"
+        placeholder="Paste TikTok URL"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        style={{ width: "100%", padding: "10px", marginBottom: "10px" }}
+      />
+      <button
+        onClick={fetchTikTok}
+        disabled={loading || !url}
+        style={{ padding: "10px 20px", cursor: "pointer" }}
+      >
+        {loading ? "Fetching..." : "Fetch"}
+      </button>
 
-        {result && (
-          <div style={{ marginTop: 18, padding: 12, border: "1px solid #eee", borderRadius: 6 }}>
-            <h2 style={{ marginBottom: 8 }}>Results</h2>
-            <div style={{ marginBottom: 8 }}><strong>Credits used:</strong> {result.creditUsed ?? "unknown"}</div>
-            {result.title && <div style={{ marginBottom: 8 }}><strong>Title:</strong> {result.title}</div>}
-            {result.thumbnail && (
-              <div style={{ marginBottom: 8 }}>
-                <img src={result.thumbnail} alt="thumb" style={{ maxWidth: "100%" }} />
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {result.video && (
-                <a href={result.video} target="_blank" rel="noreferrer" style={{ padding: 10, background: "#10b981", color: "white", textDecoration: "none", borderRadius: 6 }}>
-                  Download Video (No Watermark)
-                </a>
-              )}
-              {result.audio && (
-                <a href={result.audio} target="_blank" rel="noreferrer" style={{ padding: 10, background: "#7c3aed", color: "white", textDecoration: "none", borderRadius: 6 }}>
-                  Download Audio (MP3)
-                </a>
-              )}
-            </div>
-          </div>
-        )}
+      {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
 
-        <footer style={{ marginTop: 32, color: "#666" }}>
-          <small>Tip: cache saves credits. Monitor sa-credit-cost in server logs.</small>
-        </footer>
-      </div>
+      {result && (
+        <div style={{ marginTop: "30px" }}>
+          <h2 style={{ marginBottom: "10px" }}>{result.title || "Untitled Video"}</h2>
+          {result.thumbnail && (
+            <img
+              src={result.thumbnail}
+              alt="Thumbnail"
+              style={{ width: "100%", maxWidth: 400, marginBottom: "10px" }}
+            />
+          )}
+
+          {/* Video */}
+          {result.video ? (
+            <a
+              href={result.video}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: "inline-block", marginBottom: "10px" }}
+            >
+              <button style={{ padding: "10px 20px", cursor: "pointer" }}>
+                Download Video
+              </button>
+            </a>
+          ) : (
+            <p style={{ color: "orange" }}>⚠️ Video unavailable. Try again later.</p>
+          )}
+
+          {/* Audio */}
+          {result.audio ? (
+            <a
+              href={result.audio}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: "inline-block", marginBottom: "10px" }}
+            >
+              <button style={{ padding: "10px 20px", cursor: "pointer" }}>
+                Download Audio (MP3)
+              </button>
+            </a>
+          ) : (
+            <p style={{ color: "orange" }}>⚠️ Audio unavailable.</p>
+          )}
+
+          {/* Cache info */}
+          {result.cached && (
+            <p style={{ fontSize: "0.8rem", color: "green" }}>✅ Result from cache</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
