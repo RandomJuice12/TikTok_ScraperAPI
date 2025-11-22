@@ -35,7 +35,7 @@ export default function Home() {
     setError("");
 
     try {
-      const res = await fetch("/api/tiktok", {
+      const res = await fetch("/api/retry-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
@@ -43,12 +43,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Unknown error");
 
-      // Only update video, keep audio
-      setResult(prev => ({
-        ...prev,
-        video: data.video,
-        cached: data.cached || false,
-      }));
+      setResult(prev => ({ ...prev, video: data.video }));
     } catch (err) {
       setError(err.message);
     } finally {
